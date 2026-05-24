@@ -1,5 +1,6 @@
 const BASE_URL = import.meta.env.VITE_NEXUS_BASE_URL as string;
 const REPO = import.meta.env.VITE_NEXUS_REPO as string;
+const GROUP_PREFIX = (import.meta.env.VITE_NEXUS_GROUP_PREFIX as string) ?? '';
 
 if (!BASE_URL || !REPO) {
   throw new Error('VITE_NEXUS_BASE_URL and VITE_NEXUS_REPO must be set');
@@ -57,17 +58,18 @@ async function fetchAllComponents(): Promise<NexusComponent[]> {
   return all;
 }
 
-function findIndexAsset(c: NexusComponent): NexusAsset | undefined {
-  return (
-    c.assets.find((a) => a.path.endsWith('/index.html')) ??
-    c.assets.find((a) => a.path.endsWith('index.html'))
-  );
-}
-
-function parseProjectAndVersion(path: string): { project: string; version: string } | null {
-  const parts = path.split('/').filter(Boolean);
-  if (parts.length < 3) return null;
-  return { project: parts[0], version: parts[1] };
+// Path layout: <GROUP_PREFIX>/<project>/<project>-<version>.zip
+function parseDpscanPath(path: string): { project: string; version: string } | null {
+  const prefix = GROUP_PREFIX ? GROUP_PREFIX + '/' : '';
+  if (prefix && !path.startsWith(prefix)) return null;
+  const rest = path.slice(prefix.length).split('/');
+  if (rest.length !== 2) return null;
+  const [project, filename] = rest;
+  if (!filename.endsWith('.zip')) return null;
+  const stem = filename.slice(0, -4);
+  const projectPrefix = project + '-';
+  if (!stem.startsWith(projectPrefix)) return null;
+  return { project, version: stem.slice(projectPrefix.length) };
 }
 
 export async function listProjects(): Promise<Project[]> {
@@ -75,17 +77,17 @@ export async function listProjects(): Promise<Project[]> {
   const byProject = new Map<string, ReportVersion[]>();
 
   for (const c of components) {
-    const asset = findIndexAsset(c);
-    if (!asset) continue;
-    const parsed = parseProjectAndVersion(asset.path);
-    if (!parsed) continue;
-    const list = byProject.get(parsed.project) ?? [];
-    list.push({
-      version: parsed.version,
-      url: asset.downloadUrl,
-      lastModified: asset.lastModified,
-    });
-    byProject.set(parsed.project, list);
+    for (const a of c.assets) {
+      const parsed = parseDpscanPath(a.path);
+      if (!parsed) continue;
+      const list = byProject.get(parsed.project) ?? [];
+      list.push({
+        version: parsed.version,
+        url: a.downloadUrl,
+        lastModified: a.lastModified,
+      });
+      byProject.set(parsed.project, list);
+    }
   }
 
   const projects: Project[] = [];
