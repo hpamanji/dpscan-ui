@@ -4,6 +4,12 @@ import { Link, useParams } from 'react-router-dom';
 import { listProjects } from '../lib/nexus';
 import { loadReportFromZip, type LoadedReport } from '../lib/zipReport';
 
+interface ReportState {
+  forUrl: string | null;
+  report: LoadedReport | null;
+  error: Error | null;
+}
+
 export default function ProjectDetail() {
   const { project } = useParams<{ project: string }>();
   const projectName = project ? decodeURIComponent(project) : '';
@@ -15,22 +21,51 @@ export default function ProjectDetail() {
   });
 
   const current = useMemo(() => data?.find((p) => p.name === projectName), [data, projectName]);
-  const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
-  const active = current?.versions.find((v) => v.version === selectedVersion) ?? current?.latest;
 
-  const {
-    data: report,
-    isFetching: reportFetching,
-    error: reportError,
-  } = useQuery<LoadedReport>({
-    queryKey: ['report', active?.url],
-    queryFn: () => loadReportFromZip(active!.url),
-    enabled: !!active,
-    staleTime: Infinity,
-    gcTime: 5 * 60 * 1000,
+  // Namespace selection by project so it auto-resets when navigating between projects.
+  const [selection, setSelection] = useState<{ project: string; version: string } | null>(null);
+  const selectedVersion = selection?.project === projectName ? selection.version : null;
+  const active = current?.versions.find((v) => v.version === selectedVersion) ?? current?.latest;
+  const activeUrl = active?.url ?? null;
+
+  const [reportState, setReportState] = useState<ReportState>({
+    forUrl: null,
+    report: null,
+    error: null,
   });
 
-  useEffect(() => () => report?.revoke(), [report]);
+  useEffect(() => {
+    if (!activeUrl) return;
+    let cancelled = false;
+    let loaded: LoadedReport | null = null;
+    loadReportFromZip(activeUrl)
+      .then((r) => {
+        if (cancelled) {
+          r.revoke();
+          return;
+        }
+        loaded = r;
+        setReportState({ forUrl: activeUrl, report: r, error: null });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setReportState({
+          forUrl: activeUrl,
+          report: null,
+          error: err instanceof Error ? err : new Error(String(err)),
+        });
+      });
+    return () => {
+      cancelled = true;
+      loaded?.revoke();
+    };
+  }, [activeUrl]);
+
+  // Derive loading/report/error from whether the cached state matches the active URL.
+  const matches = reportState.forUrl === activeUrl;
+  const report = matches ? reportState.report : null;
+  const reportError = matches ? reportState.error : null;
+  const reportLoading = !!activeUrl && !report && !reportError;
 
   if (isLoading) return <p className="status">Loading…</p>;
   if (error) return <p className="status error">Failed to load: {(error as Error).message}</p>;
@@ -53,7 +88,7 @@ export default function ProjectDetail() {
           Version:
           <select
             value={active!.version}
-            onChange={(e) => setSelectedVersion(e.target.value)}
+            onChange={(e) => setSelection({ project: projectName, version: e.target.value })}
           >
             {current.versions.map((v) => (
               <option key={v.version} value={v.version}>
@@ -68,9 +103,9 @@ export default function ProjectDetail() {
         </label>
       </header>
       {reportError && (
-        <p className="status error">Failed to render report: {(reportError as Error).message}</p>
+        <p className="status error">Failed to render report: {reportError.message}</p>
       )}
-      {reportFetching && !report && <p className="status">Extracting report…</p>}
+      {reportLoading && <p className="status">Extracting report…</p>}
       {report && (
         <iframe
           key={report.url}
